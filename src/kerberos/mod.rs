@@ -26,7 +26,7 @@ use url::Url;
 pub use self::client::initialize_security_context;
 use self::config::KerberosConfig;
 pub use self::encryption_params::EncryptionParams;
-pub use self::server::{ServerProperties, accept_security_context};
+pub use self::server::{ClientPrincipal, ServerProperties, accept_security_context};
 use super::channel_bindings::ChannelBindings;
 use crate::builders::ChangePassword;
 use crate::generator::{
@@ -99,6 +99,8 @@ pub struct Kerberos {
     pub(crate) dh_parameters: Option<DhParameters>,
     pub(crate) krb5_user_to_user: bool,
     pub(crate) server: Option<Box<ServerProperties>>,
+    /// The client of the AP-REQ accepted by a server context, verbatim from the ticket.
+    pub(crate) client_principal: Option<ClientPrincipal>,
 }
 
 impl Kerberos {
@@ -119,6 +121,7 @@ impl Kerberos {
             dh_parameters: None,
             krb5_user_to_user: false,
             server: None,
+            client_principal: None,
         })
     }
 
@@ -139,7 +142,18 @@ impl Kerberos {
             dh_parameters: None,
             krb5_user_to_user: false,
             server: Some(Box::new(server_properties)),
+            client_principal: None,
         })
+    }
+
+    /// The client principal of the AP-REQ a server context accepted, exactly as the ticket names it.
+    ///
+    /// Set by [`accept_security_context`] once the ticket and authenticator are validated; `None` for
+    /// client contexts and before that point. Unlike [`ContextNames::username`] (from
+    /// [`Sspi::query_context_names`]), nothing is dropped or case-folded: every name component, the
+    /// name type and the realm are reported as the ticket carries them.
+    pub fn client_principal(&self) -> Option<&ClientPrincipal> {
+        self.client_principal.as_ref()
     }
 
     pub fn is_client(&self) -> bool {
@@ -825,6 +839,7 @@ pub mod test_data {
             dh_parameters: None,
             krb5_user_to_user: false,
             server: None,
+            client_principal: None,
         }
     }
 
@@ -871,6 +886,7 @@ pub mod test_data {
             dh_parameters: None,
             krb5_user_to_user: false,
             server: Some(Box::new(fake_server_properties())),
+            client_principal: None,
         }
     }
 }

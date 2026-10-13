@@ -4,6 +4,9 @@ use picky_krb::crypto::CipherSuite;
 use picky_krb::data_types::{Authenticator, EncTicketPart, KerberosStringAsn1, PrincipalName};
 use picky_krb::messages::ApReq;
 
+use picky_asn1::wrapper::IntegerAsn1;
+
+use super::ClientPrincipal;
 use crate::{Error, ErrorKind, Result, Secret, Username};
 
 /// Decrypts the [ApReq] ticket and returns decoded encrypted part of the ticket.
@@ -54,4 +57,32 @@ pub(super) fn client_upn(cname: &PrincipalName, crealm: &KerberosStringAsn1) -> 
             format!("unsupported principal name type: {name_type:?}"),
         ))
     }
+}
+
+/// Decodes a Kerberos `Int32` (RFC 4120 §5.2.4).
+fn int32(value: &IntegerAsn1) -> Result<i32> {
+    let bytes = value.as_signed_bytes_be();
+    if bytes.len() > 4 {
+        return Err(Error::new(ErrorKind::InvalidToken, "Int32 value is out of range"));
+    }
+    let fill = if bytes[0] & 0x80 == 0 { 0x00 } else { 0xff };
+    let mut be = [fill; 4];
+    be[4 - bytes.len()..].copy_from_slice(bytes);
+
+    Ok(i32::from_be_bytes(be))
+}
+
+/// Constructs [ClientPrincipal] from the client's [PrincipalName] and realm, without loss.
+pub(super) fn client_principal(cname: &PrincipalName, crealm: &KerberosStringAsn1) -> Result<ClientPrincipal> {
+    Ok(ClientPrincipal {
+        name_type: int32(&cname.name_type.0)?,
+        name_components: cname
+            .name_string
+            .0
+            .0
+            .iter()
+            .map(|component| component.to_string())
+            .collect(),
+        realm: crealm.0.to_string(),
+    })
 }

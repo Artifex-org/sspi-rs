@@ -2,6 +2,8 @@ pub(crate) mod as_exchange;
 mod cache;
 mod extractors;
 mod generators;
+#[cfg(test)]
+mod tests;
 
 use std::time::Duration;
 
@@ -28,12 +30,28 @@ use crate::kerberos::client::extractors::extract_seq_number_from_ap_rep;
 use crate::kerberos::flags::ApOptions;
 use crate::kerberos::messages::{decode_krb_message, generate_krb_message};
 use crate::kerberos::server::as_exchange::request_tgt;
-use crate::kerberos::server::extractors::client_upn;
+use crate::kerberos::server::extractors::{client_principal, client_upn};
 use crate::kerberos::server::generators::generate_tgt_rep;
 use crate::{
     AcceptSecurityContextResult, BufferType, CredentialsBuffers, Error, ErrorKind, Kerberos, KerberosState, Result,
     Secret, SecurityBuffer, SecurityStatus, ServerRequestFlags, ServerResponseFlags, SspiImpl, Username,
 };
+
+/// The client principal of an accepted Kerberos ticket, exactly as the ticket names it.
+///
+/// [`Kerberos::client_principal`] returns it once a server context has accepted an AP-REQ.
+/// `cname` and `crealm` of the ticket and the authenticator are equal at that point
+/// (RFC 4120 §3.2.3), so this is the authenticated client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClientPrincipal {
+    /// The `name-type` of the ticket's `cname` (e.g. `NT-PRINCIPAL` = 1, `NT-ENTERPRISE` = 10).
+    pub name_type: i32,
+    /// Every `name-string` component of the ticket's `cname`, in order, unmodified.
+    pub name_components: Vec<String>,
+    /// The ticket's `crealm`, unmodified (no case folding).
+    pub realm: String,
+}
 
 /// Additional properties that are needed only for server-side Kerberos.
 #[derive(Debug, Clone)]
@@ -387,6 +405,10 @@ pub async fn accept_security_context(
                 debug!("ApReq Ticket and Authenticator are valid!");
 
                 server_data.client = Some(client_upn(&cname.0, &crealm.0)?);
+                server.client_principal = Some(client_principal(
+                    &ticket_enc_part.0.cname.0,
+                    &ticket_enc_part.0.crealm.0,
+                )?);
 
                 let ap_options_bytes = ap_req.0.ap_options.0.0.as_bytes();
                 // [5.5.1.  KRB_AP_REQ Definition](https://www.rfc-editor.org/rfc/rfc4120#section-5.5.1)
