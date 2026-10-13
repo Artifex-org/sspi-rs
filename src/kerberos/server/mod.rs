@@ -13,6 +13,7 @@ use picky_asn1::restricted_string::IA5String;
 use picky_asn1::wrapper::{Asn1SequenceOf, ExplicitContextTag0, ExplicitContextTag1, IntegerAsn1};
 use picky_krb::constants::gss_api::{AP_REP_TOKEN_ID, AP_REQ_TOKEN_ID, TGT_REP_TOKEN_ID, TGT_REQ_TOKEN_ID};
 use picky_krb::constants::types::NT_SRV_INST;
+use picky_krb::crypto::CipherSuite;
 use picky_krb::data_types::{AuthenticatorInner, KerberosStringAsn1, PrincipalName};
 use picky_krb::gss_api::MechTypeList;
 use picky_krb::messages::{ApRep, ApReq, TgtReq};
@@ -25,7 +26,6 @@ use self::extractors::{decrypt_ap_req_authenticator, decrypt_ap_req_ticket};
 use self::generators::generate_ap_rep;
 use crate::builders::FilledAcceptSecurityContext;
 use crate::generator::YieldPointLocal;
-use crate::kerberos::DEFAULT_ENCRYPTION_TYPE;
 use crate::kerberos::client::extractors::extract_seq_number_from_ap_rep;
 use crate::kerberos::flags::ApOptions;
 use crate::kerberos::messages::{decode_krb_message, generate_krb_message};
@@ -434,13 +434,13 @@ pub async fn accept_security_context(
                 // the KRB_AP_REQ message will have MUTUAL-REQUIRED set in its ap-options field, and a KRB_AP_REP message
                 // is required in response.
                 let status = if ap_options.contains(ApOptions::MUTUAL_REQUIRED) {
-                    let key_size = server
-                        .encryption_params
-                        .encryption_type
-                        .as_ref()
-                        .unwrap_or(&DEFAULT_ENCRYPTION_TYPE)
-                        .cipher()
-                        .key_size();
+                    // [3.2.4.  Generation of a KRB_AP_REP Message](https://www.rfc-editor.org/rfc/rfc4120#section-3.2.4)
+                    // The AP-REP is encrypted in the ticket session key, so its encryption type is the session
+                    // key's; the acceptor subkey below is of the same type, and the per-message tokens that use
+                    // it follow from `encryption_params.encryption_type`.
+                    let session_key_type = CipherSuite::try_from(ticket_enc_part.0.key.0.key_type.0.0.as_slice())?;
+                    let key_size = session_key_type.cipher().key_size();
+                    server.encryption_params.encryption_type = Some(session_key_type);
                     let mut sub_session_key = vec![0; key_size];
 
                     let mut rand = StdRng::try_from_rng(&mut SysRng)?;

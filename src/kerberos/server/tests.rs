@@ -12,18 +12,20 @@ use picky_asn1::wrapper::{
     ExplicitContextTag4, ExplicitContextTag5, ExplicitContextTag6, ExplicitContextTag7, IntegerAsn1, OctetStringAsn1,
     Optional,
 };
-use picky_krb::constants::key_usages::{AP_REQ_AUTHENTICATOR, TICKET_REP};
+use picky_krb::constants::gss_api::AP_REP_TOKEN_ID;
+use picky_krb::constants::key_usages::{AP_REP_ENC, AP_REQ_AUTHENTICATOR, TICKET_REP};
 use picky_krb::constants::types::{AP_REQ_MSG_TYPE, NT_ENTERPRISE, NT_PRINCIPAL, NT_SRV_INST};
 use picky_krb::crypto::CipherSuite;
 use picky_krb::data_types::{
-    ApOptions, Authenticator, AuthenticatorInner, EncTicketPart, EncTicketPartInner, EncryptedData, EncryptionKey,
-    KerberosFlags, KerberosStringAsn1, KerberosTime, PrincipalName, Ticket, TicketInner, TransitedEncoding,
+    ApOptions, Authenticator, AuthenticatorInner, EncApRepPart, EncTicketPart, EncTicketPartInner, EncryptedData,
+    EncryptionKey, KerberosFlags, KerberosStringAsn1, KerberosTime, PrincipalName, Ticket, TicketInner,
+    TransitedEncoding,
 };
-use picky_krb::messages::{ApReq, ApReqInner};
+use picky_krb::messages::{ApRep, ApReq, ApReqInner};
 use time::OffsetDateTime;
 
 use super::{ClientPrincipal, ServerProperties};
-use crate::kerberos::messages::generate_krb_message;
+use crate::kerberos::messages::{decode_krb_message, generate_krb_message};
 use crate::{
     BufferType, CredentialsBuffers, DataRepresentation, Kerberos, KerberosConfig, Secret, SecurityBuffer,
     SecurityStatus, ServerRequestFlags, Sspi, SspiImpl, Username,
@@ -33,6 +35,7 @@ const SERVICE: [&str; 2] = ["HTTP", "gw.example.com"];
 const SERVICE_REALM: &str = "EXAMPLE.COM";
 const SERVICE_KEY: [u8; 32] = [0x42; 32];
 const SESSION_KEY_AES256: [u8; 32] = [0x17; 32];
+const SESSION_KEY_AES128: [u8; 16] = [0x71; 16];
 /// `ap-options` bit 2 (RFC 4120 §5.5.1).
 const MUTUAL_REQUIRED: u32 = 0x2000_0000;
 
@@ -306,4 +309,38 @@ fn client_principal_is_not_set_for_a_rejected_ticket() {
 
     assert!(result.is_err());
     assert_eq!(kerberos.client_principal(), None);
+}
+
+#[test]
+fn ap_rep_is_encrypted_with_the_session_key_type() {
+    for session_key in [&SESSION_KEY_AES128[..], &SESSION_KEY_AES256[..]] {
+        let (suite, etype) = aes_suite(session_key);
+        let mut kerberos = server();
+        let ap_req = TestApReq {
+            session_key,
+            name_type: NT_PRINCIPAL,
+            cname: &["alice"],
+            crealm: SERVICE_REALM,
+            mutual: true,
+        };
+        let (status, output) = accept(&mut kerberos, ap_req.token());
+        assert_eq!(status, SecurityStatus::Ok);
+
+        let ap_rep: ApRep = decode_krb_message(&output, AP_REP_TOKEN_ID).unwrap();
+        let enc_part = &ap_rep.0.enc_part.0;
+        assert_eq!(
+            enc_part.etype.0.0,
+            vec![etype],
+            "AP-REP etype for a {etype} session key"
+        );
+        // The client decrypts it with the session key of the ticket.
+        let plaintext = suite
+            .cipher()
+            .decrypt(session_key, AP_REP_ENC, &enc_part.cipher.0.0)
+            .unwrap();
+        let enc_ap_rep_part: EncApRepPart = picky_asn1_der::from_bytes(&plaintext).unwrap();
+        let subkey = &enc_ap_rep_part.0.subkey.0.as_ref().unwrap().0;
+        assert_eq!(subkey.key_type.0.0, vec![etype]);
+        assert_eq!(subkey.key_value.0.0.len(), session_key.len());
+    }
 }
